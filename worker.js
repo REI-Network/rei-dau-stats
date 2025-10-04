@@ -15,7 +15,6 @@ const BLOCK_BATCH_SIZE = 100; // RPC batch size for block retrieval
 const RECORD_INTERVAL = 1200; // Generate record every 1200 blocks (1 hour)
 const RECORDS_PER_24H = 24; // 24 hours = 24 records (28800 blocks / 1200)
 const DATA_RETENTION_DAYS = 7; // Keep data for 7 days
-const INITIAL_BLOCKS_COUNT = 7200; // Process 7200 blocks (6 hours) on first run for quick startup
 
 // Worker state
 let isProcessing = false;
@@ -307,31 +306,45 @@ async function scheduledTask() {
     // Determine blocks to process
     let blocksToProcess = [];
     if (lastProcessedBlock === 0) {
-      // First run - start from recent blocks for quick initial cache
-      // Process only recent blocks (6 hours) to build initial cache quickly
-      const initialBlocksCount = Math.min(
-        INITIAL_BLOCKS_COUNT,
-        latestBlockNumber
-      );
-      const initialStartBlock = Math.max(
-        0,
-        latestBlockNumber - initialBlocksCount
-      );
-      blocksToProcess = [{ start: initialStartBlock, end: latestBlockNumber }];
+      // First run - process full 24-hour window
+      // Start from 24 hours ago to get complete data
+      blocksToProcess = [{ start: startBlockNumber, end: latestBlockNumber }];
       console.log(
-        `First run: processing recent ${initialBlocksCount} blocks (${initialStartBlock} to ${latestBlockNumber}) for quick startup`
+        `First run: processing full 24-hour window (${startBlockNumber} to ${latestBlockNumber}) - ${
+          latestBlockNumber - startBlockNumber + 1
+        } blocks`
       );
       console.log(
-        `Note: This will build initial cache with 6 hours of data. Full 24-hour data will be available after subsequent runs.`
+        `This will build complete 24-hour cache with all historical data.`
       );
     } else {
-      // Incremental update - process new blocks since last run
-      const newBlocksStart = Math.max(lastProcessedBlock + 1, startBlockNumber);
-      if (newBlocksStart <= latestBlockNumber) {
-        blocksToProcess = [{ start: newBlocksStart, end: latestBlockNumber }];
+      // Check if we need to backfill to get complete 24-hour data
+      const blocksSinceLastRun = latestBlockNumber - lastProcessedBlock;
+      const blocksIn24Hours = latestBlockNumber - startBlockNumber + 1;
+
+      if (blocksSinceLastRun < blocksIn24Hours) {
+        // Need to backfill to get complete 24-hour data
+        blocksToProcess = [{ start: startBlockNumber, end: latestBlockNumber }];
         console.log(
-          `Incremental update: processing new blocks ${newBlocksStart} to ${latestBlockNumber}`
+          `Backfill: processing complete 24-hour window (${startBlockNumber} to ${latestBlockNumber}) - ${
+            latestBlockNumber - startBlockNumber + 1
+          } blocks to ensure complete data`
         );
+        console.log(
+          `This will backfill missing historical data to complete 24-hour coverage.`
+        );
+      } else {
+        // Incremental update - process new blocks since last run
+        const newBlocksStart = Math.max(
+          lastProcessedBlock + 1,
+          startBlockNumber
+        );
+        if (newBlocksStart <= latestBlockNumber) {
+          blocksToProcess = [{ start: newBlocksStart, end: latestBlockNumber }];
+          console.log(
+            `Incremental update: processing new blocks ${newBlocksStart} to ${latestBlockNumber}`
+          );
+        }
       }
     }
 

@@ -274,12 +274,11 @@ getStats();
 5. **Non-blocking**: Main server remains responsive during data processing
 6. **Record-based Storage**: One record is generated every 1200 blocks (1 hour) for efficient storage
 7. **24-hour Aggregation**: 24-hour statistics are calculated by merging the last 24 records
-8. **Smart Startup**: First run processes only 6 hours of recent data for quick startup
-9. **Data Retention**: Historical data older than 7 days is automatically cleaned up
-10. **Incremental Updates**: Only new blocks are processed, making the service very efficient
-11. **Error Handling**: The service includes comprehensive error handling and returns detailed error messages
-12. **Data Persistence**: Statistics are cached to disk and survive server restarts
-13. **Process Isolation**: Worker process crashes don't affect the main server
+8. **Data Retention**: Historical data older than 7 days is automatically cleaned up
+9. **Incremental Updates**: Only new blocks are processed, making the service very efficient
+10. **Error Handling**: The service includes comprehensive error handling and returns detailed error messages
+11. **Data Persistence**: Statistics are cached to disk and survive server restarts
+12. **Process Isolation**: Worker process crashes don't affect the main server
 
 ## Troubleshooting
 
