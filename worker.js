@@ -149,10 +149,8 @@ async function saveBlockRecord(blockRange, stats) {
     const historicalData = await loadHistoricalStats();
     historicalData.push(record);
 
-    // Keep only last 28 records for 24h data
-    if (historicalData.length > RECORDS_PER_24H) {
-      historicalData.splice(0, historicalData.length - RECORDS_PER_24H);
-    }
+    // Don't limit records here - let cleanupOldData handle retention based on 7 days
+    // This allows storing 7 days of history (168 records) for historical queries
 
     await saveHistoricalStats(historicalData);
     console.log(
