@@ -20,7 +20,6 @@ const REI_RPC_URL = process.env.REI_RPC_URL || 'https://rpc.rei.network';
 const CACHE_DIR = path.join(__dirname, 'cache');
 const CACHE_FILE = path.join(CACHE_DIR, 'statistics.json');
 const HISTORY_CACHE_FILE = path.join(CACHE_DIR, 'history.json');
-const RECORDS_PER_24H = 24; // 24 hours = 24 records (28800 blocks / 1200)
 
 // Global cache variables
 let cachedStats = null;
@@ -245,7 +244,7 @@ function runScheduledTask() {
 }
 
 /**
- * Get 24-hour statistics by merging last 28 records
+ * Get 24-hour statistics by merging records from last 24 hours
  */
 async function get24HourStats() {
   try {
@@ -255,39 +254,61 @@ async function get24HourStats() {
       return {
         totalBlocks: 0,
         totalTransactions: 0,
-        uniqueAddresses: [],
         uniqueAddressCount: 0,
         blockRange: {
           start: 0,
           end: 0,
+          startTimestamp: null,
+          endTimestamp: null,
         },
-        recordCount: 0,
         timestamp: new Date().toISOString(),
       };
     }
 
-    // Get last 24 records (24 hours worth)
-    const last24Records = historicalData.slice(-RECORDS_PER_24H);
+    // Filter records from last 24 hours based on block end timestamp
+    const now = new Date();
+    const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+
+    const last24HourRecords = historicalData.filter((record) => {
+      // Use block end timestamp if available, otherwise fall back to record timestamp
+      const blockEndTime = record.blockRange?.endTimestamp
+        ? new Date(record.blockRange.endTimestamp)
+        : new Date(record.timestamp);
+
+      // If endTimestamp is within the time range, include the record
+      return blockEndTime >= twentyFourHoursAgo;
+    });
+
+    if (last24HourRecords.length === 0) {
+      return {
+        totalBlocks: 0,
+        totalTransactions: 0,
+        uniqueAddressCount: 0,
+        blockRange: {
+          start: 0,
+          end: 0,
+          startTimestamp: null,
+          endTimestamp: null,
+        },
+        timestamp: new Date().toISOString(),
+      };
+    }
 
     // Merge statistics from all records
     let totalBlocks = 0;
     let totalTransactions = 0;
-    const uniqueAddresses = new Set();
+    let uniqueAddressCount = 0;
     let earliestBlock = Infinity;
     let latestBlock = 0;
     let earliestTimestamp = null;
     let latestTimestamp = null;
 
-    for (const record of last24Records) {
+    for (const record of last24HourRecords) {
       totalBlocks += record.stats.totalBlocks;
       totalTransactions += record.stats.totalTransactions;
 
-      // Merge unique addresses
-      if (record.stats.uniqueAddresses) {
-        for (const address of record.stats.uniqueAddresses) {
-          uniqueAddresses.add(address);
-        }
-      }
+      // Sum unique address counts directly (no deduplication)
+      uniqueAddressCount += record.stats.uniqueAddressCount || 0;
 
       // Track block range and timestamps
       if (record.blockRange) {
@@ -313,8 +334,7 @@ async function get24HourStats() {
     return {
       totalBlocks,
       totalTransactions,
-      uniqueAddresses: Array.from(uniqueAddresses),
-      uniqueAddressCount: uniqueAddresses.size,
+      uniqueAddressCount,
       blockRange: {
         start: earliestBlock === Infinity ? 0 : earliestBlock,
         end: latestBlock,
@@ -323,33 +343,138 @@ async function get24HourStats() {
           : null,
         endTimestamp: latestTimestamp ? latestTimestamp.toISOString() : null,
       },
-      recordCount: last24Records.length,
       timestamp: new Date().toISOString(),
     };
   } catch (error) {
     console.error('Failed to get 24-hour statistics:', error);
 
-    // Fallback to cached stats if available
-    if (cachedStats) {
-      return {
-        ...cachedStats,
-        timestamp: new Date().toISOString(),
-      };
-    }
-
-    // Return empty stats as last resort
+    // Return empty stats on error
     return {
       totalBlocks: 0,
       totalTransactions: 0,
-      uniqueAddresses: [],
       uniqueAddressCount: 0,
       blockRange: {
         start: 0,
         end: 0,
+        startTimestamp: null,
+        endTimestamp: null,
       },
-      recordCount: 0,
       timestamp: new Date().toISOString(),
     };
+  }
+}
+
+/**
+ * Get 7-day statistics, grouped by day
+ */
+async function get7DaysStats() {
+  try {
+    const historicalData = await loadHistoricalStats();
+
+    if (historicalData.length === 0) {
+      return [];
+    }
+
+    // Filter records from last 7 days based on block timestamp
+    const now = new Date();
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    const last7DaysRecords = historicalData.filter((record) => {
+      // Use block end timestamp if available, otherwise fall back to record timestamp
+      const blockEndTime = record.blockRange?.endTimestamp
+        ? new Date(record.blockRange.endTimestamp)
+        : new Date(record.timestamp);
+
+      // If endTimestamp is within the time range, include the record
+      return blockEndTime >= sevenDaysAgo;
+    });
+
+    if (last7DaysRecords.length === 0) {
+      return [];
+    }
+
+    // Group records by day based on block timestamp
+    const recordsByDay = {};
+
+    for (const record of last7DaysRecords) {
+      // Use block end timestamp for grouping, fall back to record timestamp
+      const blockEndTime = record.blockRange?.endTimestamp
+        ? new Date(record.blockRange.endTimestamp)
+        : new Date(record.timestamp);
+
+      const dayKey = blockEndTime.toISOString().split('T')[0]; // YYYY-MM-DD
+
+      if (!recordsByDay[dayKey]) {
+        recordsByDay[dayKey] = [];
+      }
+      recordsByDay[dayKey].push(record);
+    }
+
+    // Merge records for each day
+    const dailyStats = [];
+    const sortedDays = Object.keys(recordsByDay).sort().reverse(); // Most recent first
+
+    for (const day of sortedDays.slice(0, 7)) {
+      // Limit to 7 days
+      const dayRecords = recordsByDay[day];
+
+      let totalBlocks = 0;
+      let totalTransactions = 0;
+      let uniqueAddressCount = 0;
+      let earliestBlock = Infinity;
+      let latestBlock = 0;
+      let earliestTimestamp = null;
+      let latestTimestamp = null;
+
+      for (const record of dayRecords) {
+        totalBlocks += record.stats.totalBlocks;
+        totalTransactions += record.stats.totalTransactions;
+
+        // Sum unique address counts directly (no deduplication)
+        uniqueAddressCount += record.stats.uniqueAddressCount || 0;
+
+        // Track block range and timestamps
+        if (record.blockRange) {
+          earliestBlock = Math.min(earliestBlock, record.blockRange.start);
+          latestBlock = Math.max(latestBlock, record.blockRange.end);
+
+          if (record.blockRange.startTimestamp) {
+            const startTime = new Date(record.blockRange.startTimestamp);
+            if (!earliestTimestamp || startTime < earliestTimestamp) {
+              earliestTimestamp = startTime;
+            }
+          }
+          if (record.blockRange.endTimestamp) {
+            const endTime = new Date(record.blockRange.endTimestamp);
+            if (!latestTimestamp || endTime > latestTimestamp) {
+              latestTimestamp = endTime;
+            }
+          }
+        }
+      }
+
+      dailyStats.push({
+        date: day,
+        totalBlocks,
+        totalTransactions,
+        uniqueAddressCount,
+        blockRange: {
+          start: earliestBlock === Infinity ? 0 : earliestBlock,
+          end: latestBlock,
+          startTimestamp: earliestTimestamp
+            ? earliestTimestamp.toISOString()
+            : null,
+          endTimestamp: latestTimestamp ? latestTimestamp.toISOString() : null,
+        },
+        recordCount: dayRecords.length,
+        timestamp: new Date().toISOString(),
+      });
+    }
+
+    return dailyStats;
+  } catch (error) {
+    console.error('Failed to get 7-day statistics:', error);
+    return [];
   }
 }
 
@@ -373,46 +498,43 @@ app.get('/api/stats/24h', async (req, res) => {
   }
 });
 
-// Historical statistics endpoint
-app.get('/api/stats/history', async (req, res) => {
+// 7-day statistics endpoint
+app.get('/api/stats/7days', async (req, res) => {
   try {
-    const historicalData = await loadHistoricalStats();
+    const stats = await get7DaysStats();
+
     res.json({
       success: true,
-      data: historicalData,
-      message: 'Successfully retrieved historical statistics',
+      data: stats,
+      message: 'Successfully retrieved 7-day statistics',
     });
   } catch (error) {
-    console.error('Failed to get historical statistics:', error);
+    console.error('Failed to get 7-day statistics:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to retrieve historical statistics',
+      message: 'Failed to retrieve 7-day statistics',
     });
   }
 });
 
-// Recent records endpoint (last 24 records)
-app.get('/api/stats/records', async (req, res) => {
+// History endpoint - returns raw historical data
+app.get('/api/stats/history', async (req, res) => {
   try {
     const historicalData = await loadHistoricalStats();
-    const last24Records = historicalData.slice(-RECORDS_PER_24H);
 
     res.json({
       success: true,
-      data: {
-        records: last24Records,
-        count: last24Records.length,
-        totalRecords: historicalData.length,
-      },
-      message: 'Successfully retrieved recent records',
+      data: historicalData,
+      count: historicalData.length,
+      message: 'Successfully retrieved historical data',
     });
   } catch (error) {
-    console.error('Failed to get recent records:', error);
+    console.error('Failed to get historical data:', error);
     res.status(500).json({
       success: false,
       error: error.message,
-      message: 'Failed to retrieve recent records',
+      message: 'Failed to retrieve historical data',
     });
   }
 });
@@ -435,9 +557,11 @@ app.get('/', (req, res) => {
     message: 'REI Network DAU Statistics Service',
     endpoints: {
       'GET /api/stats/24h':
-        'Get 24-hour statistics (merged from last 24 records)',
-      'GET /api/stats/records': 'Get recent records (last 24 records)',
-      'GET /api/stats/history': 'Get all historical statistics',
+        'Get 24-hour statistics (merged from last 24 hours)',
+      'GET /api/stats/7days':
+        'Get 7-day statistics (grouped by day, max 7 days)',
+      'GET /api/stats/history':
+        'Get raw historical data (all records, max 7 days)',
       'GET /health': 'Health check',
     },
   });
@@ -489,10 +613,9 @@ async function startServer() {
     app.listen(PORT, () => {
       console.log(`🚀 REI Network DAU Statistics Service started`);
       console.log(`📊 Service URL: http://localhost:${PORT}`);
-      console.log(`📈 API endpoint: http://localhost:${PORT}/api/stats/24h`);
-      console.log(
-        `📚 History endpoint: http://localhost:${PORT}/api/stats/history`
-      );
+      console.log(`📈 24h API: http://localhost:${PORT}/api/stats/24h`);
+      console.log(`📅 7days API: http://localhost:${PORT}/api/stats/7days`);
+      console.log(`📚 History API: http://localhost:${PORT}/api/stats/history`);
       console.log(`💚 Health check: http://localhost:${PORT}/health`);
       console.log(`⏰ Scheduled task runs every 30 minutes via worker process`);
     });
