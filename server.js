@@ -244,6 +244,73 @@ function runScheduledTask() {
 }
 
 /**
+ * Get block end timestamp from record
+ */
+function getBlockEndTime(record) {
+  return record.blockRange?.endTimestamp
+    ? new Date(record.blockRange.endTimestamp)
+    : new Date(record.timestamp);
+}
+
+/**
+ * Get date key (YYYY-MM-DD) from timestamp
+ */
+function getDateKey(timestamp) {
+  return timestamp.toISOString().split('T')[0];
+}
+
+/**
+ * Merge statistics from records
+ */
+function mergeRecordStats(records) {
+  let totalBlocks = 0;
+  let totalTransactions = 0;
+  let uniqueAddressCount = 0;
+  let earliestBlock = Infinity;
+  let latestBlock = 0;
+  let earliestTimestamp = null;
+  let latestTimestamp = null;
+
+  for (const record of records) {
+    totalBlocks += record.stats.totalBlocks;
+    totalTransactions += record.stats.totalTransactions;
+    uniqueAddressCount += record.stats.uniqueAddressCount || 0;
+
+    if (record.blockRange) {
+      earliestBlock = Math.min(earliestBlock, record.blockRange.start);
+      latestBlock = Math.max(latestBlock, record.blockRange.end);
+
+      if (record.blockRange.startTimestamp) {
+        const startTime = new Date(record.blockRange.startTimestamp);
+        if (!earliestTimestamp || startTime < earliestTimestamp) {
+          earliestTimestamp = startTime;
+        }
+      }
+      if (record.blockRange.endTimestamp) {
+        const endTime = new Date(record.blockRange.endTimestamp);
+        if (!latestTimestamp || endTime > latestTimestamp) {
+          latestTimestamp = endTime;
+        }
+      }
+    }
+  }
+
+  return {
+    totalBlocks,
+    totalTransactions,
+    uniqueAddressCount,
+    blockRange: {
+      start: earliestBlock === Infinity ? 0 : earliestBlock,
+      end: latestBlock,
+      startTimestamp: earliestTimestamp
+        ? earliestTimestamp.toISOString()
+        : null,
+      endTimestamp: latestTimestamp ? latestTimestamp.toISOString() : null,
+    },
+  };
+}
+
+/**
  * Get 24-hour statistics by merging records from last 24 hours
  */
 async function get24HourStats() {
@@ -266,18 +333,24 @@ async function get24HourStats() {
     }
 
     // Filter records from last 24 hours based on block end timestamp
+    // Optimize: traverse from end since newer records are typically at the end
     const now = new Date();
     const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
 
-    const last24HourRecords = historicalData.filter((record) => {
-      // Use block end timestamp if available, otherwise fall back to record timestamp
-      const blockEndTime = record.blockRange?.endTimestamp
-        ? new Date(record.blockRange.endTimestamp)
-        : new Date(record.timestamp);
-
-      // If endTimestamp is within the time range, include the record
-      return blockEndTime >= twentyFourHoursAgo;
-    });
+    const last24HourRecords = [];
+    // Traverse from end for better performance (newer records are at the end)
+    for (let i = historicalData.length - 1; i >= 0; i--) {
+      const record = historicalData[i];
+      const blockEndTime = getBlockEndTime(record);
+      if (blockEndTime >= twentyFourHoursAgo) {
+        last24HourRecords.push(record);
+      } else {
+        // Since records are typically sorted by time, we can stop early
+        break;
+      }
+    }
+    // Reverse to maintain chronological order
+    last24HourRecords.reverse();
 
     if (last24HourRecords.length === 0) {
       return {
@@ -295,54 +368,10 @@ async function get24HourStats() {
     }
 
     // Merge statistics from all records
-    let totalBlocks = 0;
-    let totalTransactions = 0;
-    let uniqueAddressCount = 0;
-    let earliestBlock = Infinity;
-    let latestBlock = 0;
-    let earliestTimestamp = null;
-    let latestTimestamp = null;
-
-    for (const record of last24HourRecords) {
-      totalBlocks += record.stats.totalBlocks;
-      totalTransactions += record.stats.totalTransactions;
-
-      // Sum unique address counts directly (no deduplication)
-      uniqueAddressCount += record.stats.uniqueAddressCount || 0;
-
-      // Track block range and timestamps
-      if (record.blockRange) {
-        earliestBlock = Math.min(earliestBlock, record.blockRange.start);
-        latestBlock = Math.max(latestBlock, record.blockRange.end);
-
-        // Track timestamps
-        if (record.blockRange.startTimestamp) {
-          const startTime = new Date(record.blockRange.startTimestamp);
-          if (!earliestTimestamp || startTime < earliestTimestamp) {
-            earliestTimestamp = startTime;
-          }
-        }
-        if (record.blockRange.endTimestamp) {
-          const endTime = new Date(record.blockRange.endTimestamp);
-          if (!latestTimestamp || endTime > latestTimestamp) {
-            latestTimestamp = endTime;
-          }
-        }
-      }
-    }
+    const mergedStats = mergeRecordStats(last24HourRecords);
 
     return {
-      totalBlocks,
-      totalTransactions,
-      uniqueAddressCount,
-      blockRange: {
-        start: earliestBlock === Infinity ? 0 : earliestBlock,
-        end: latestBlock,
-        startTimestamp: earliestTimestamp
-          ? earliestTimestamp.toISOString()
-          : null,
-        endTimestamp: latestTimestamp ? latestTimestamp.toISOString() : null,
-      },
+      ...mergedStats,
       timestamp: new Date().toISOString(),
     };
   } catch (error) {
@@ -375,34 +404,36 @@ async function get7DaysStats() {
       return [];
     }
 
-    // Filter records from last 7 days based on block timestamp
+    // Filter records from last 7 days based on block end timestamp
+    // Optimize: traverse from end since newer records are typically at the end
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    const last7DaysRecords = historicalData.filter((record) => {
-      // Use block end timestamp if available, otherwise fall back to record timestamp
-      const blockEndTime = record.blockRange?.endTimestamp
-        ? new Date(record.blockRange.endTimestamp)
-        : new Date(record.timestamp);
-
-      // If endTimestamp is within the time range, include the record
-      return blockEndTime >= sevenDaysAgo;
-    });
+    const last7DaysRecords = [];
+    // Traverse from end for better performance (newer records are at the end)
+    for (let i = historicalData.length - 1; i >= 0; i--) {
+      const record = historicalData[i];
+      const blockEndTime = getBlockEndTime(record);
+      if (blockEndTime >= sevenDaysAgo) {
+        last7DaysRecords.push(record);
+      } else {
+        // Since records are typically sorted by time, we can stop early
+        break;
+      }
+    }
+    // Reverse to maintain chronological order
+    last7DaysRecords.reverse();
 
     if (last7DaysRecords.length === 0) {
       return [];
     }
 
-    // Group records by day based on block timestamp
+    // Group records by day based on block end timestamp
     const recordsByDay = {};
 
     for (const record of last7DaysRecords) {
-      // Use block end timestamp for grouping, fall back to record timestamp
-      const blockEndTime = record.blockRange?.endTimestamp
-        ? new Date(record.blockRange.endTimestamp)
-        : new Date(record.timestamp);
-
-      const dayKey = blockEndTime.toISOString().split('T')[0]; // YYYY-MM-DD
+      const blockEndTime = getBlockEndTime(record);
+      const dayKey = getDateKey(blockEndTime);
 
       if (!recordsByDay[dayKey]) {
         recordsByDay[dayKey] = [];
@@ -417,55 +448,11 @@ async function get7DaysStats() {
     for (const day of sortedDays.slice(0, 7)) {
       // Limit to 7 days
       const dayRecords = recordsByDay[day];
-
-      let totalBlocks = 0;
-      let totalTransactions = 0;
-      let uniqueAddressCount = 0;
-      let earliestBlock = Infinity;
-      let latestBlock = 0;
-      let earliestTimestamp = null;
-      let latestTimestamp = null;
-
-      for (const record of dayRecords) {
-        totalBlocks += record.stats.totalBlocks;
-        totalTransactions += record.stats.totalTransactions;
-
-        // Sum unique address counts directly (no deduplication)
-        uniqueAddressCount += record.stats.uniqueAddressCount || 0;
-
-        // Track block range and timestamps
-        if (record.blockRange) {
-          earliestBlock = Math.min(earliestBlock, record.blockRange.start);
-          latestBlock = Math.max(latestBlock, record.blockRange.end);
-
-          if (record.blockRange.startTimestamp) {
-            const startTime = new Date(record.blockRange.startTimestamp);
-            if (!earliestTimestamp || startTime < earliestTimestamp) {
-              earliestTimestamp = startTime;
-            }
-          }
-          if (record.blockRange.endTimestamp) {
-            const endTime = new Date(record.blockRange.endTimestamp);
-            if (!latestTimestamp || endTime > latestTimestamp) {
-              latestTimestamp = endTime;
-            }
-          }
-        }
-      }
+      const mergedStats = mergeRecordStats(dayRecords);
 
       dailyStats.push({
         date: day,
-        totalBlocks,
-        totalTransactions,
-        uniqueAddressCount,
-        blockRange: {
-          start: earliestBlock === Infinity ? 0 : earliestBlock,
-          end: latestBlock,
-          startTimestamp: earliestTimestamp
-            ? earliestTimestamp.toISOString()
-            : null,
-          endTimestamp: latestTimestamp ? latestTimestamp.toISOString() : null,
-        },
+        ...mergedStats,
         recordCount: dayRecords.length,
         timestamp: new Date().toISOString(),
       });
