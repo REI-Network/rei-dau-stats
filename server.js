@@ -459,6 +459,7 @@ async function get7DaysStats() {
     for (const day of sortedDays) {
       const dayRecords = recordsByDay[day] || [];
 
+      // Only include days that have data
       if (dayRecords.length > 0) {
         const mergedStats = mergeRecordStats(dayRecords);
         dailyStats.push({
@@ -467,23 +468,8 @@ async function get7DaysStats() {
           recordCount: dayRecords.length,
           timestamp: new Date().toISOString(),
         });
-      } else {
-        // Include empty days to show complete 7-day range
-        dailyStats.push({
-          date: day,
-          totalBlocks: 0,
-          totalTransactions: 0,
-          uniqueAddressCount: 0,
-          blockRange: {
-            start: 0,
-            end: 0,
-            startTimestamp: null,
-            endTimestamp: null,
-          },
-          recordCount: 0,
-          timestamp: new Date().toISOString(),
-        });
       }
+      // Skip days without data - don't return empty records
     }
 
     return dailyStats;
