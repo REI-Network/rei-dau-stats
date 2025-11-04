@@ -244,12 +244,13 @@ function runScheduledTask() {
 }
 
 /**
- * Get block end timestamp from record
+ * Get block start timestamp from record
  */
-function getBlockEndTime(record) {
-  return record.blockRange?.endTimestamp
-    ? new Date(record.blockRange.endTimestamp)
-    : new Date(record.timestamp);
+function getBlockStartTime(record) {
+  if (!record.blockRange?.startTimestamp) {
+    throw new Error('Record missing startTimestamp');
+  }
+  return new Date(record.blockRange.startTimestamp);
 }
 
 /**
@@ -332,7 +333,7 @@ async function get24HourStats() {
       };
     }
 
-    // Filter records from last 24 hours based on block end timestamp
+    // Filter records from last 24 hours based on block start timestamp
     // Optimize: traverse from end since newer records are typically at the end
     const now = new Date();
     const twentyFourHoursAgo = new Date(now.getTime() - 24 * 60 * 60 * 1000);
@@ -341,12 +342,18 @@ async function get24HourStats() {
     // Traverse from end for better performance (newer records are at the end)
     for (let i = historicalData.length - 1; i >= 0; i--) {
       const record = historicalData[i];
-      const blockEndTime = getBlockEndTime(record);
-      if (blockEndTime >= twentyFourHoursAgo) {
-        last24HourRecords.push(record);
-      } else {
-        // Since records are typically sorted by time, we can stop early
-        break;
+      try {
+        const blockStartTime = getBlockStartTime(record);
+        if (blockStartTime >= twentyFourHoursAgo) {
+          last24HourRecords.push(record);
+        } else {
+          // Since records are typically sorted by time, we can stop early
+          break;
+        }
+      } catch (error) {
+        // Skip records without startTimestamp
+        console.warn('Skipping record without startTimestamp:', error.message);
+        continue;
       }
     }
     // Reverse to maintain chronological order
@@ -394,7 +401,8 @@ async function get24HourStats() {
 }
 
 /**
- * Get 7-day statistics, grouped by day
+ * Get 7-day statistics, grouped by day (UTC 0)
+ * Returns statistics grouped by UTC date (YYYY-MM-DD)
  */
 async function get7DaysStats() {
   try {
@@ -404,58 +412,78 @@ async function get7DaysStats() {
       return [];
     }
 
-    // Filter records from last 7 days based on block end timestamp
-    // Optimize: traverse from end since newer records are typically at the end
+    // Get UTC dates for last 7 days (including today)
     const now = new Date();
-    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
 
-    const last7DaysRecords = [];
-    // Traverse from end for better performance (newer records are at the end)
-    for (let i = historicalData.length - 1; i >= 0; i--) {
-      const record = historicalData[i];
-      const blockEndTime = getBlockEndTime(record);
-      if (blockEndTime >= sevenDaysAgo) {
-        last7DaysRecords.push(record);
-      } else {
-        // Since records are typically sorted by time, we can stop early
-        break;
-      }
-    }
-    // Reverse to maintain chronological order
-    last7DaysRecords.reverse();
-
-    if (last7DaysRecords.length === 0) {
-      return [];
+    // Generate array of UTC dates for last 7 days (YYYY-MM-DD format)
+    const last7DaysDates = [];
+    const last7DaysDatesSet = new Set(); // For fast lookup
+    for (let i = 0; i < 7; i++) {
+      const date = new Date(now);
+      date.setUTCDate(date.getUTCDate() - i);
+      date.setUTCHours(0, 0, 0, 0); // Set to start of day in UTC
+      const dateKey = getDateKey(date);
+      last7DaysDates.push(dateKey);
+      last7DaysDatesSet.add(dateKey);
     }
 
-    // Group records by day based on block end timestamp
+    // Group records by UTC date (YYYY-MM-DD) based on block start timestamp
     const recordsByDay = {};
 
-    for (const record of last7DaysRecords) {
-      const blockEndTime = getBlockEndTime(record);
-      const dayKey = getDateKey(blockEndTime);
+    for (const record of historicalData) {
+      try {
+        const blockStartTime = getBlockStartTime(record);
+        // Get UTC date (YYYY-MM-DD) from block start timestamp
+        const dayKey = getDateKey(blockStartTime);
 
-      if (!recordsByDay[dayKey]) {
-        recordsByDay[dayKey] = [];
+        // Only include records from the last 7 days
+        if (last7DaysDatesSet.has(dayKey)) {
+          if (!recordsByDay[dayKey]) {
+            recordsByDay[dayKey] = [];
+          }
+          recordsByDay[dayKey].push(record);
+        }
+      } catch (error) {
+        // Skip records without startTimestamp
+        console.warn('Skipping record without startTimestamp:', error.message);
+        continue;
       }
-      recordsByDay[dayKey].push(record);
     }
 
-    // Merge records for each day
+    // Merge records for each day and return in reverse chronological order (most recent first)
     const dailyStats = [];
-    const sortedDays = Object.keys(recordsByDay).sort().reverse(); // Most recent first
 
-    for (const day of sortedDays.slice(0, 7)) {
-      // Limit to 7 days
-      const dayRecords = recordsByDay[day];
-      const mergedStats = mergeRecordStats(dayRecords);
+    // Sort dates in reverse order (most recent first)
+    const sortedDays = last7DaysDates.sort().reverse();
 
-      dailyStats.push({
-        date: day,
-        ...mergedStats,
-        recordCount: dayRecords.length,
-        timestamp: new Date().toISOString(),
-      });
+    for (const day of sortedDays) {
+      const dayRecords = recordsByDay[day] || [];
+
+      if (dayRecords.length > 0) {
+        const mergedStats = mergeRecordStats(dayRecords);
+        dailyStats.push({
+          date: day, // UTC date in YYYY-MM-DD format
+          ...mergedStats,
+          recordCount: dayRecords.length,
+          timestamp: new Date().toISOString(),
+        });
+      } else {
+        // Include empty days to show complete 7-day range
+        dailyStats.push({
+          date: day,
+          totalBlocks: 0,
+          totalTransactions: 0,
+          uniqueAddressCount: 0,
+          blockRange: {
+            start: 0,
+            end: 0,
+            startTimestamp: null,
+            endTimestamp: null,
+          },
+          recordCount: 0,
+          timestamp: new Date().toISOString(),
+        });
+      }
     }
 
     return dailyStats;
